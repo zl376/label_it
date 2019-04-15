@@ -4,9 +4,15 @@
 # Author: Zhe Liu (zl376@cornell.edu)
 # Date: 2019-04-15
 
+from __future__ import division, print_function, absolute_import
+
 import numpy as np
 import tensorflow as tf
+from tensorflow.keras.utils import Progbar
+from tensorflow.keras.metrics import sparse_categorical_accuracy
 from sklearn.feature_extraction import DictVectorizer
+from datetime import datetime
+from collections import deque
 import os
 import pickle
 
@@ -63,6 +69,9 @@ class WE_Label:
             # Create embedded vector
             self.embed = tf.nn.embedding_lookup_sparse(self.embeddings, self.x, None, combiner='sum')
             # self.embed = tf.matmul(self.x, self.embed_matrix_x)
+            
+            # Create logit
+            self.logit = tf.matmul(self.embed, tf.transpose(self.weights)) + self.biases
         
         
     def compile(self, num_sampled=5):
@@ -81,69 +90,190 @@ class WE_Label:
                                                           inputs=self.embed,
                                                           num_sampled=num_sampled,
                                                           num_classes=self.label_size))
+            # Construct Metric
+            with tf.name_scope('metric'):
+                self.accuracy = tf.reduce_mean(sparse_categorical_accuracy(self.y, self.logit))
             
             # Construct optimizer
             with tf.name_scope('optimizer'):
-                self.optimizer = tf.train.AdamOptimizer(learning_rate=1E-3).minimize(self.loss)
+                self.learning_rate = tf.Variable(1E-3, trainable=False, name="learning_rate")
+                self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.loss)
+                
+            # Summary
+            self.loss_summary = tf.summary.scalar("loss/loss_train", self.loss)
+            self.loss_val_summary = tf.summary.scalar("loss/loss_val", self.loss)
+            self.accuracy_summary = tf.summary.scalar("metric/acc_train", self.accuracy)
+            self.accuracy_val_summary = tf.summary.scalar("metric/acc_val", self.accuracy)
+            
+            # Saver
+            self.saver = tf.train.Saver(max_to_keep=10)
             
             # Initialization
             self.init = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+            
+            
+    def fit(self, x=None, 
+                  y=None,
+                  verbose=True):
         
+        # Split into train/validation data
+        validation_split = 0.1
+        N = len(x)
+        idx = np.arange(N)
+        np.random.shuffle(idx)
+        idx_train, idx_val = idx[:-np.floor(N * validation_split).astype(np.int)], idx[-np.floor(N * validation_split).astype(np.int):]
+        
+        # Construct generator
+        def generator(batch_size):
+            # Generate a positive batch
+            idx = np.random.choice(idx_train, replace=False, size=(batch_size))
+            return x[idx], y[idx]
+        def generator_val(batch_size):
+            # Use all validation data
+            return x[idx_val], y[idx_val]
+        
+        # Fit using generator
+        self.fit_generator(generator=generator, 
+                           batch_size=10,
+                           generator_val=generator_val,
+                           epochs=1,
+                           steps_per_epoch=100000,
+                           logdir='./log',
+                           ckptdir='./ckpt',
+                           n_recent=1000,
+                           verbose=verbose)
     
+        
     def fit_generator(self, generator=None,
                             batch_size=None,
                             epochs=1,
                             verbose=True,
-                            callbacks=None,
-                            validation_split=0.,
-                            validation_data=None,
-                            shuffle=True,
-                            class_weight=None,
-                            sample_weight=None,
+                            logdir=None,
+                            ckptdir=None,
+                            n_recent=100,
                             initial_epoch=0,
                             steps_per_epoch=None,
-                            validation_steps=None,
-                            freq_save=100,
+                            generator_val=None,
+                            batch_size_val=None,
+                            freq_val=10,
                             **kwargs):
-        
+  
+        # Initialize training
         if initial_epoch == 0:
             self.sess.run(self.init)
-        
         if steps_per_epoch is None:
             steps_per_epoch = 1
+        #   Progress
+        freq_prog = 100
+        progbar = Progbar(steps_per_epoch, stateful_metrics=['loss', 'val loss',
+                                                             'accuracy', 'val accuracy'])
+        #   Summary (Tensorboard)
+        freq_log = 100
+        if not logdir is None:
+            logdir = os.path.join(logdir, datetime.strftime(datetime.utcnow(), "%Y%m%d_%H%M%S"))
+            flag_log = True
+            train_writer = tf.summary.FileWriter(logdir, self.graph, flush_secs=5)
+        else:
+            flag_log = False
+        #   Checkpoint
+        freq_ckpt = freq_val
+        if not ckptdir is None:
+            flag_ckpt = True
+            fn_ckpt = os.path.join(ckptdir, 'WE_Label')
+            # Save best model
+        else:
+            flag_ckpt = False
+        def check_point(step):
+            self.saver.save(self.sess, fn_ckpt, global_step=step)
+        def load_best():
+            self.saver.restore(self.sess, tf.train.latest_checkpoint(ckptdir))
+        #   History
+        history = {'train': deque(maxlen=n_recent),
+                   'val': deque(maxlen=n_recent)}
+        def is_plateau():
+            h = history['val'] if history['val'] else history['train']
+            return len(h) == h.maxlen and h[0] == max(h)
+        best = deque(maxlen=1)
+        def check_best(loss):
+            if not best or loss <= best[0]:
+                best.append(loss)
+                return True
+            else:
+                return False
+        #   Validation
+        if not generator_val is None:
+            flag_val = True
+            if batch_size_val is None:
+                batch_size_val = batch_size
+        else:
+            flag_val = False
+        #   Stopping
+        min_lr = 1E-5
         
+            
+            
         # We must initialize all variables before we use them.
         self.sess.run(self.init)
         print('Initialized')
 
-        average_loss = 0
-        for step in range(steps_per_epoch):
+        for step in range(1, steps_per_epoch+1):
             def should(freq):
-                return freq > 0 and step%freq == 0
+                return step == 1 or step%freq == 0
             
             batch_x, batch_y = self._preprocess_batch(*generator(batch_size))
             feed_dict = {self.x: batch_x, self.y: batch_y}
-
-            # Define metadata variable.
-            run_metadata = tf.RunMetadata()
 
             # We perform one update step by evaluating the optimizer op (including it
             # in the list of returned values for session.run()
             # Also, evaluate the merged op to get all summaries from the returned
             # "summary" variable. Feed metadata variable to session for visualizing
             # the graph in TensorBoard.
-            _, loss_val = self.sess.run([self.optimizer, self.loss],
-                                        feed_dict=feed_dict,
-                                        run_metadata=run_metadata)
-            average_loss += loss_val
+            _, loss, accuracy = self.sess.run([self.optimizer, self.loss, self.accuracy],
+                                              feed_dict=feed_dict)
 
-            if verbose and should(2000):
-                if step > 0:
-                    average_loss /= 2000
-                # The average loss is an estimate of the loss over the last 2000
-                # batches.
-                print('Average loss at step ', step, ': ', average_loss)
-                average_loss = 0
+            if flag_val and should(freq_val):
+                batch_val_x, batch_val_y = self._preprocess_batch(*generator_val(batch_size_val))
+                feed_dict = {self.x: batch_val_x, self.y: batch_val_y}                
+                loss_val, accuracy_val = self.sess.run([self.loss, self.accuracy],
+                                                       feed_dict=feed_dict)
+                history['val'].append(accuracy_val)
+            else:
+                history['train'].append(accuracy)
+            
+            if verbose and should(freq_prog):
+                progbar.update(step, [('loss', np.mean([loss])),
+                                      ('val loss', np.mean([loss_val])),
+                                      ('accuracy', np.mean([accuracy])),
+                                      ('val accuracy', np.mean([accuracy_val])),])
+                
+            if flag_log and should(freq_log):
+                for x in (self.sess.run(self.loss_summary, feed_dict={self.loss: loss}),
+                          self.sess.run(self.accuracy_summary, feed_dict={self.accuracy: accuracy})):
+                    train_writer.add_summary(x, step)
+                if flag_val:
+                    for x in (self.sess.run(self.loss_val_summary, feed_dict={self.loss: loss_val}),
+                              self.sess.run(self.accuracy_val_summary, feed_dict={self.accuracy: accuracy_val})):
+                        train_writer.add_summary(x, step)
+            
+
+            if flag_ckpt and should(freq_ckpt):
+                val_check = loss_val if flag_val else loss
+                if check_best(val_check):
+                    print('\rSave BEST model at step {0} ({1:.3f})'.format(step, val_check), end='', flush=True)
+                    check_point(step)
+            
+            if is_plateau():
+                print('\nPlateau reached.'.format(step))
+                # Load best model
+                load_best()
+                # Try reduce learning rate
+                self.learning_rate = self.learning_rate * 0.5
+                print('\nReduce lr to {}'.format(self.sess.run(self.learning_rate)))
+                # Flush history
+                [ x.clear() for x in history.values() ]
+                if self.sess.run(self.learning_rate) < min_lr:
+                    break
+                
 
         # Get fit embedding
         self.V, self.Uw, self.Ub = self.sess.run([self.embeddings, self.weights, self.biases], feed_dict={})
@@ -180,7 +310,7 @@ class WE_Label:
     def load_model(self, filename):
         with open(filename, 'rb') as file:
             self.U, self.V = pickle.load(file)
-            
+        
     
     def _preprocess_batch(self, x, y):
         batch_size = x.shape[0]

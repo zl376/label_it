@@ -4,9 +4,9 @@ Assign label to item according to its description
 ## Feature encode
 * Bag of words
 
-## Matrix factorization model
+## Feature embedding
+### Matrix factorization
 * Singular Value Decomposition (SVD)
 * Non-negative Matrix Factorization (NMF)
-
-## Neural Network
-* Shallow Neural Network (Word Embedding)
+### Neural Network
+* Word Embedding (word2vec)

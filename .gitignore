@@ -2,6 +2,7 @@
 data/
 weight/
 log/
+ckpt/
 #   Notebook
 .ipynb_checkpoints
 __pycache__

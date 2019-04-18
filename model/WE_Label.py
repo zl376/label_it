@@ -134,7 +134,7 @@ class WE_Label:
         
         # Fit using generator
         self.fit_generator(generator=generator, 
-                           batch_size=10,
+                           batch_size=32,
                            generator_val=generator_val,
                            epochs=1,
                            steps_per_epoch=100000,

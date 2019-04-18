@@ -1,6 +1,7 @@
 # Ignore folder
 data/
 weight/
+weight_dbg/
 log/
 ckpt/
 #   Notebook

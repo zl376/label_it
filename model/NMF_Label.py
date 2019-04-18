@@ -13,6 +13,7 @@ import pickle
 
 N_ITER = 10
 RANDOM_STATE = 42
+EPS = 1E-8
 
 
 
@@ -84,10 +85,10 @@ class NMF_Label:
         if self.distance == 'cos':
             # Cosine distance
             #   Normalize encoded vector 
-            U_norm = self.U / np.linalg.norm(self.U, ord=2, axis=1, keepdims=True)
-            enc_x_norm = enc_x / np.linalg.norm(enc_x, ord=2, axis=1, keepdims=True)
+            U_norm = self.U / (np.linalg.norm(self.U, ord=2, axis=1, keepdims=True) + EPS)
+            enc_x_norm = enc_x / (np.linalg.norm(enc_x, ord=2, axis=1, keepdims=True) + EPS)
             
-            dist_matrix = U_norm.dot(enc_x.T)
+            dist_matrix = U_norm.dot(enc_x_norm.T)
 
             y_idx = np.argmax(dist_matrix, axis=0)
         

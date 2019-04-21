@@ -57,7 +57,10 @@ class NMF_Label:
         embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
         
         # Embed target (y)
-        embed_matrix_y = self.dv_y.transform([ {v: 1} for v in y ])
+        if y.ndim == 1:
+            embed_matrix_y = self.dv_y.transform([ {v: 1} for v in y ])
+        else:
+            embed_matrix_y = self.dv_y.transform([ {v: 1 for v in arr} for arr in y ])
         
         # Co-occurance matrix
         #   Raw
@@ -73,7 +76,7 @@ class NMF_Label:
             print('Recon error: {0}, Raw matrix norm: {1}'.format(nmf.reconstruction_err_, np.linalg.norm(co_matrix.A, ord=2)))
         
             
-    def predict(self, x):
+    def predict(self, x, n_best=1):
             
         # Embed feature (x)
         embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
@@ -90,10 +93,14 @@ class NMF_Label:
             
             dist_matrix = U_norm.dot(enc_x_norm.T)
 
-            y_idx = np.argmax(dist_matrix, axis=0)
+            # y_idx = np.argmax(dist_matrix, axis=0)
+            y_idx = np.argsort(dist_matrix, axis=0, )[-n_best:, :]
         
         # Recover target (y) from embed idx
-        y = np.asarray([ self.map_i2v_y[i] for i in y_idx ])
+        if n_best == 1:
+            y = np.asarray([ self.map_i2v_y[i] for i in y_idx.flatten() ])
+        else:
+            y = np.asarray([ [ self.map_i2v_y[i] for i in arr ] for arr in y_idx ])
         
         return y
         

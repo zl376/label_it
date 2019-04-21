@@ -58,7 +58,10 @@ class SVD_Label:
         embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
         
         # Embed target (y)
-        embed_matrix_y = self.dv_y.transform([ {v: 1} for v in y ])
+        if False:#y.ndim == 1:
+            embed_matrix_y = self.dv_y.transform([ {v: 1} for v in y ])
+        else:
+            embed_matrix_y = self.dv_y.transform([ {v: 1 for v in arr} for arr in y ])
         
         # Co-occurance matrix
         #   Raw
@@ -83,7 +86,7 @@ class SVD_Label:
             plt.title('Singular Value')
             
             
-    def predict(self, x):
+    def predict(self, x, n_best=1):
             
         # Embed feature (x)
         embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
@@ -100,10 +103,11 @@ class SVD_Label:
             
             dist_matrix = U_norm.dot(enc_x_norm.T)
 
-            y_idx = np.argmax(dist_matrix, axis=0)
+            # y_idx = np.argmax(dist_matrix, axis=0)
+            y_idx = np.argsort(dist_matrix, axis=0, )[-n_best:, :].T
         
         # Recover target (y) from embed idx
-        y = np.asarray([ self.map_i2v_y[i] for i in y_idx ])
+        y = np.asarray([ [ self.map_i2v_y[i] for i in arr ] for arr in y_idx ])
         
         return y
         

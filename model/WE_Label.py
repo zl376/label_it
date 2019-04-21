@@ -22,22 +22,16 @@ class WE_Label:
     '''
     TODO: Multi-GPU version
     '''
-    def __init__(self, word_size, vocabulary_size, label_size,
+    def __init__(self, vocabulary_size, label_size,
                        embedding_size=20,
-                       sparse=True,
-                       dir_ckpt='./ckpt'):
-        self.word_size = word_size
+                       sparse=True):
         self.vocabulary_size = vocabulary_size
         self.label_size = label_size
         self.embedding_size = embedding_size
-        self.dir_ckpt = os.path.join(dir_ckpt)
         
         # DictVectorizer for embedding
         self.dv_x = DictVectorizer(sparse=sparse, sort=False)
         self.dv_y = DictVectorizer(sparse=sparse, sort=False)        
-        
-        if not os.path.exists(self.dir_ckpt):
-            os.makedirs(self.dir_ckpt)
         
         
     def build(self, universe_x, universe_y):
@@ -272,8 +266,11 @@ class WE_Label:
                 # Flush history
                 [ x.clear() for x in history.values() ]
                 if self.sess.run(self.learning_rate) < min_lr:
+                    print('\nLearning rate {0} reaches limit: < {1}.'.format(self.sess.run(self.learning_rate), min_lr))
                     break
-                
+                    
+        # Make sure to load the best model
+        load_best()
 
         # Get fit embedding
         self.V, self.Uw, self.Ub = self.sess.run([self.embeddings, self.weights, self.biases], feed_dict={})

@@ -4,7 +4,7 @@
 # Author: Zhe Liu (zl376@cornell.edu)
 # Date: 2019-04-15
 
-from __future__ import division, print_function, absolute_import
+from __future__ import absolute_import
 
 import numpy as np
 import tensorflow as tf
@@ -16,6 +16,8 @@ from collections import deque
 import os
 import pickle
 
+import utils
+
 
 
 class WE_Label:
@@ -24,10 +26,12 @@ class WE_Label:
     '''
     def __init__(self, vocabulary_size, label_size,
                        embedding_size=20,
+                       num_true_class=1, 
                        sparse=True):
         self.vocabulary_size = vocabulary_size
         self.label_size = label_size
         self.embedding_size = embedding_size
+        self.num_true_class = num_true_class
         
         # DictVectorizer for embedding
         self.dv_x = DictVectorizer(sparse=sparse, sort=False)
@@ -52,7 +56,7 @@ class WE_Label:
             with tf.name_scope('inputs'):
                 # self.x = tf.placeholder(tf.int32, shape=(None,), name='word')
                 self.x = tf.sparse.placeholder(tf.int32, shape=(None, self.vocabulary_size), name='inputs')
-                self.y = tf.placeholder(tf.int32, shape=(None,) + (1,), name='label')
+                self.y = tf.placeholder(tf.int32, shape=(None,) + (self.num_true_class,), name='label')
             
             # Prepare embedding
             with tf.name_scope('embeddings'):
@@ -83,10 +87,12 @@ class WE_Label:
                                                           labels=self.y,
                                                           inputs=self.embed,
                                                           num_sampled=num_sampled,
-                                                          num_classes=self.label_size))
+                                                          num_classes=self.label_size,
+                                                          num_true=self.num_true_class,
+                                                          remove_accidental_hits=True,))
             # Construct Metric
             with tf.name_scope('metric'):
-                self.accuracy = tf.reduce_mean(sparse_categorical_accuracy(self.y, self.logit))
+                self.accuracy = tf.reduce_mean(sparse_categorical_accuracy(self.y[:, :1], self.logit))
             
             # Construct optimizer
             with tf.name_scope('optimizer'):
@@ -230,9 +236,9 @@ class WE_Label:
                 feed_dict = {self.x: batch_val_x, self.y: batch_val_y}                
                 loss_val, accuracy_val = self.sess.run([self.loss, self.accuracy],
                                                        feed_dict=feed_dict)
-                history['val'].append(accuracy_val)
+                history['val'].append(loss_val)
             else:
-                history['train'].append(accuracy)
+                history['train'].append(loss)
             
             if verbose and should(freq_prog):
                 progbar.update(step, [('loss', np.mean([loss])),
@@ -278,23 +284,18 @@ class WE_Label:
         self.U = np.concatenate((self.Uw, self.Ub[..., np.newaxis]), axis=1)
 
     
-    def predict(self, x):
+    def predict(self, x, n_best=1):
         # Pre-embed feature (x)
-        pre_embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
+        batch_x = self._preprocess_batch(x)
         
-        # Transform embedded description into encoded space 
-        enc_x = pre_embed_matrix_x.dot(self.V)
-        #   Add intercept term for bias
-        enc_x = np.concatenate((enc_x, np.ones(shape=(enc_x.shape[0], 1))), axis=1)
-        
-        # Match by finding maximized logit (log lik) wrt rows of U
-        #   DO NOT Normalize encoded vector 
-        logit_matrix = self.U.dot(enc_x.T)
+        # Directly inference to get logit output
+        logit_matrix = self.sess.run(self.logit, feed_dict={self.x: batch_x})
 
-        y_idx = np.argmax(logit_matrix, axis=0)
+        # y_idx = np.argmax(logit_matrix, axis=1)
+        y_idx = np.argsort(logit_matrix, axis=1)[:, -n_best:]
 
         # Recover target (y) from embed idx
-        y = np.asarray([ self.map_i2v_y[i] for i in y_idx ])
+        y = utils.asarray_of_list([ [ self.map_i2v_y[i] for i in arr ] for arr in y_idx ])
         
         return y
 
@@ -309,7 +310,7 @@ class WE_Label:
             self.U, self.V = pickle.load(file)
         
     
-    def _preprocess_batch(self, x, y):
+    def _preprocess_batch(self, x, y=None):
         batch_size = x.shape[0]
         
         # Pre-embed feature (x)
@@ -321,10 +322,19 @@ class WE_Label:
                                                                      #   tf.nn.embedding_lookup_sparse
 
         # Pre-embed target (y)
-        #   Just return the mapped index of y instead of embedded matrix
-        y_prep = np.asarray([ self.map_v2i_y[v] for v in y ]).reshape(batch_size, 1)
-        
-        return x_prep, y_prep
+        #   Adjust width of y first
+        if not y is None:
+            def repeat(arr, n):
+                n_repeat = (n//len(arr) + 1)
+                return (arr*n_repeat)[:n]
+            y = [ repeat(arr, self.num_true_class) for arr in y ]
+            #   Just return the mapped index of y instead of embedded matrix
+            # y_prep = np.asarray([ self.map_v2i_y[v] for v in y ]).reshape(batch_size, 1)
+            y_prep = np.asarray([ [ self.map_v2i_y[v] for v in arr ] for arr in y ])
+
+            return x_prep, y_prep
+        else:
+            return x_prep
     
     
     @property

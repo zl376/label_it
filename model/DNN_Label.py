@@ -4,7 +4,7 @@
 # Author: Zhe Liu (zl376@cornell.edu)
 # Date: 2019-04-18
 
-from __future__ import division, print_function, absolute_import
+from __future__ import absolute_import
 
 import numpy as np
 import tensorflow as tf
@@ -15,6 +15,8 @@ from datetime import datetime
 from collections import deque
 import os
 import pickle
+
+import utils
 
 
 
@@ -301,7 +303,7 @@ class DNN_Label:
         y_idx = np.argmax(logit_matrix, axis=1)
 
         # Recover target (y) from embed idx
-        y = np.asarray([ self.map_i2v_y[i] for i in y_idx ])
+        y = utils.asarray_of_list([ [ self.map_i2v_y[i] for i in arr ] for arr in y_idx ])
         
         return y
 

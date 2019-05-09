@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.extmath import randomized_svd
+from gensim.models import TfidfModel
 import pickle
 
 import label_it.utils as utils
@@ -28,13 +29,18 @@ class SVD_Label:
     '''
     def __init__(self, n_components=20,
                        distance='cos',
-                       sparse=True):
+                       sparse=True,
+                       tfidf=False):
         self.n_components = n_components
         self.distance = distance
+        self.tfidf = tfidf
         
         # DictVectorizer for embedding
         self.dv_x = DictVectorizer(sparse=sparse)
         self.dv_y = DictVectorizer(sparse=sparse)
+        
+        # Model for Tfidf
+        self.TFIDF = None
         
         
     def build(self, universe_x, universe_y):
@@ -60,6 +66,13 @@ class SVD_Label:
         
         # Embed feature (x)
         embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
+        if self.tfidf:
+            self.TFIDF = TfidfModel(list( [ (j, row[0,j]) for j in row.nonzero()[1] ] for row in embed_matrix_x ),
+                                    normalize=False)
+            embed_matrix_x = self.dv_x.transform([ { self.map_i2v_x[i]: w
+                                                     for i,w in self.TFIDF[list( (self.map_v2i_x[v], 1.0) 
+                                                                                 for v in arr if v in self.map_v2i_x )] }
+                                                   for arr in x ])
         
         # Embed target (y)
         embed_matrix_y = self.dv_y.transform([ {v: 1 for v in arr} for arr in y ])
@@ -90,7 +103,13 @@ class SVD_Label:
     def predict(self, x, n_best=1):
             
         # Embed feature (x)
-        embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
+        if self.tfidf:
+            embed_matrix_x = self.dv_x.transform([ { self.map_i2v_x[i]: w
+                                                     for i,w in self.TFIDF[list( (self.map_v2i_x[v], 1.0) 
+                                                                                 for v in arr if v in self.map_v2i_x )] }
+                                                   for arr in x ])
+        else:
+            embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
         
         # Transform embedded description into encoded space 
         enc_x = embed_matrix_x.dot(self.V)

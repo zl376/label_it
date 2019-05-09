@@ -11,6 +11,7 @@ import tensorflow as tf
 from tensorflow.keras.utils import Progbar
 from tensorflow.keras.metrics import sparse_categorical_accuracy
 from sklearn.feature_extraction import DictVectorizer
+from gensim.models import TfidfModel
 from datetime import datetime
 from collections import deque
 import os
@@ -27,15 +28,21 @@ class WE_Label:
     def __init__(self, vocabulary_size, label_size,
                        embedding_size=20,
                        num_true_class=1, 
-                       sparse=True):
+                       sparse=True,
+                       tfidf=False,
+                       **kwargs):
         self.vocabulary_size = vocabulary_size
         self.label_size = label_size
         self.embedding_size = embedding_size
         self.num_true_class = num_true_class
+        self.tfidf = tfidf
         
         # DictVectorizer for embedding
         self.dv_x = DictVectorizer(sparse=sparse, sort=False)
-        self.dv_y = DictVectorizer(sparse=sparse, sort=False)        
+        self.dv_y = DictVectorizer(sparse=sparse, sort=False)      
+        
+        # Model for Tfidf
+        self.TFIDF = None
         
         
     def build(self, universe_x, universe_y):
@@ -122,6 +129,18 @@ class WE_Label:
         idx = np.arange(N)
         np.random.shuffle(idx)
         idx_train, idx_val = idx[:-np.floor(N * validation_split).astype(np.int)], idx[-np.floor(N * validation_split).astype(np.int):]
+        
+        if self.tfidf:
+            embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
+            self.TFIDF = TfidfModel(list( [ (j, row[0,j]) for j in row.nonzero()[1] ] for row in embed_matrix_x ),
+                                    normalize=False)
+            x = np.asarray([ { self.map_i2v_x[i]: w
+                               for i,w in self.TFIDF[list( (self.map_v2i_x[v], 1.0) 
+                                                           for v in arr if v in self.map_v2i_x )] }
+                             for arr in x ])
+        else:
+            x = np.asarray([ {v: 1 for v in arr} for arr in x ])
+            
         
         # Construct generator
         def generator(batch_size):
@@ -236,9 +255,9 @@ class WE_Label:
                 feed_dict = {self.x: batch_val_x, self.y: batch_val_y}                
                 loss_val, accuracy_val = self.sess.run([self.loss, self.accuracy],
                                                        feed_dict=feed_dict)
-                history['val'].append(loss_val)
+                history['val'].append(-loss_val)
             else:
-                history['train'].append(loss)
+                history['train'].append(-loss)
             
             if verbose and should(freq_prog):
                 progbar.update(step, [('loss', np.mean([loss])),
@@ -286,6 +305,14 @@ class WE_Label:
     
     def predict(self, x, n_best=1):
         # Pre-embed feature (x)
+        if self.tfidf:
+            x = np.asarray([ { self.map_i2v_x[i]: w
+                               for i,w in self.TFIDF[list( (self.map_v2i_x[v], 1.0) 
+                                                           for v in arr if v in self.map_v2i_x )] }
+                             for arr in x ])
+        else:
+            x = np.asarray([ {v: 1 for v in arr} for arr in x ])
+            
         batch_x = self._preprocess_batch(x)
         
         # Directly inference to get logit output
@@ -314,7 +341,7 @@ class WE_Label:
         batch_size = x.shape[0]
         
         # Pre-embed feature (x)
-        pre_embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
+        pre_embed_matrix_x = self.dv_x.transform(x.tolist())
         # Convert to SparseTensor
         coo = pre_embed_matrix_x.tocoo()
         indices = np.mat([coo.row, coo.col]).transpose()

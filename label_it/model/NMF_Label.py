@@ -1,8 +1,8 @@
 # Definition of
-#   Labelling model using raw co-occurance matrix
+#   Labelling model using NMF (non-negative matrix factorization)
 #
 # Author: Zhe Liu (zl376@cornell.edu)
-# Date: 2019-04-21
+# Date: 2019-04-14
 
 from __future__ import absolute_import
 
@@ -10,19 +10,26 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.feature_extraction import DictVectorizer
+from sklearn.decomposition import NMF
 import pickle
 
-import utils
+import label_it.utils as utils
 
+N_ITER = 10
+RANDOM_STATE = 42
 EPS = 1E-8
 
 
 
-class CM_Label:
+class NMF_Label:
     '''
     
     '''
-    def __init__(self, sparse=True):
+    def __init__(self, n_components=20,
+                       distance='cos',
+                       sparse=True):
+        self.n_components = n_components
+        self.distance = distance
         
         # DictVectorizer for embedding
         self.dv_x = DictVectorizer(sparse=sparse)
@@ -59,43 +66,48 @@ class CM_Label:
         # Co-occurance matrix
         #   Raw
         co_matrix = embed_matrix_y.T.dot(embed_matrix_x)
-        #   Normalized (column-wise)
-        # co_matrix_norm = co_matrix / np.linalg.norm(co_matrix.A, ord=1, axis=0, keepdims=True)
+        #   Normalized (row-wise)
+        co_matrix_norm = co_matrix / np.linalg.norm(co_matrix.A, ord=2, axis=1, keepdims=True)
         
-        self.co_matrix = co_matrix
+        # Factorize using NMF
+        nmf = NMF(n_components=self.n_components, random_state=RANDOM_STATE)#, beta_loss='kullback-leibler', solver='mu')
+        self.U = nmf.fit_transform(co_matrix)
+        self.V = nmf.components_.T
+        if verbose:
+            print('Recon error: {0}, Raw matrix norm: {1}'.format(nmf.reconstruction_err_, np.linalg.norm(co_matrix.A, ord=2)))
         
             
-    def predict(self, x, n_best=1,
-                         score=False):
-        
-        # Only support inference for SINGLE feature
-        assert max([ len(arr) for arr in x ]) == 1, 'Only support inference for single feature'
+    def predict(self, x, n_best=1):
             
         # Embed feature (x)
         embed_matrix_x = self.dv_x.transform([ {v: 1 for v in arr} for arr in x ])
         
-        # Match by finding NN in column of co-ocurrance matrix
-        dist_matrix = self.co_matrix.dot(embed_matrix_x.T).A
+        # Transform embedded description into encoded space 
+        enc_x = embed_matrix_x.dot(self.V)
+        
+        # Match by finding NN in encoded space wrt rows of U
+        if self.distance == 'cos':
+            # Cosine distance
+            #   Normalize encoded vector 
+            U_norm = self.U / (np.linalg.norm(self.U, ord=2, axis=1, keepdims=True) + EPS)
+            enc_x_norm = enc_x / (np.linalg.norm(enc_x, ord=2, axis=1, keepdims=True) + EPS)
+            
+            dist_matrix = U_norm.dot(enc_x_norm.T)
 
-        # y_idx = np.argmax(dist_matrix, axis=0)
-        y_idx = np.argsort(dist_matrix, axis=0)[-n_best:, :].T
-        y_score = np.sort(dist_matrix, axis=0)[-n_best:, :].T
+            # y_idx = np.argmax(dist_matrix, axis=0)
+            y_idx = np.argsort(dist_matrix, axis=0, )[-n_best:, :].T
         
         # Recover target (y) from embed idx
         y = utils.asarray_of_list([ [ self.map_i2v_y[i] for i in arr ] for arr in y_idx ])
-        y_score = utils.asarray_of_list(y_score.tolist())
         
-        if score:
-            return y, y_score
-        else:
-            return y
+        return y
         
     
     def save_model(self, filename):
         with open(filename, 'wb') as file:
-            pickle.dump(self.co_matrix, file)
+            pickle.dump((self.U, self.V), file)
         
         
     def load_model(self, filename):
         with open(filename, 'rb') as file:
-            self.co_matrix = pickle.load(file)
+            self.U, self.V = pickle.load(file)

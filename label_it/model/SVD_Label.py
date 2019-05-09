@@ -14,7 +14,7 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.utils.extmath import randomized_svd
 import pickle
 
-import utils 
+import label_it.utils as utils
 
 N_ITER = 10
 RANDOM_STATE = 42

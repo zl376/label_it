@@ -1,8 +1,8 @@
 # Definition of
-#   Labelling model using Word Embedding (shallow Neural Network)
+#   Labelling model using (deep) Neural Network
 #
 # Author: Zhe Liu (zl376@cornell.edu)
-# Date: 2019-04-15
+# Date: 2019-04-18
 
 from __future__ import absolute_import
 
@@ -16,26 +16,24 @@ from collections import deque
 import os
 import pickle
 
-import utils
+import label_it.utils as utils
 
 
 
-class WE_Label:
+class DNN_Label:
     '''
     TODO: Multi-GPU version
     '''
     def __init__(self, vocabulary_size, label_size,
-                       embedding_size=20,
-                       num_true_class=1, 
+                       param_layer=(20,),
                        sparse=True):
         self.vocabulary_size = vocabulary_size
         self.label_size = label_size
-        self.embedding_size = embedding_size
-        self.num_true_class = num_true_class
+        self.param_layer = param_layer
         
         # DictVectorizer for embedding
         self.dv_x = DictVectorizer(sparse=sparse, sort=False)
-        self.dv_y = DictVectorizer(sparse=sparse, sort=False)        
+        self.dv_y = DictVectorizer(sparse=sparse, sort=False)
         
         
     def build(self, universe_x, universe_y):
@@ -56,20 +54,33 @@ class WE_Label:
             with tf.name_scope('inputs'):
                 # self.x = tf.placeholder(tf.int32, shape=(None,), name='word')
                 self.x = tf.sparse.placeholder(tf.int32, shape=(None, self.vocabulary_size), name='inputs')
-                self.y = tf.placeholder(tf.int32, shape=(None,) + (self.num_true_class,), name='label')
+                self.y = tf.placeholder(tf.int32, shape=(None,) + (1,), name='label')
             
             # Prepare embedding
-            with tf.name_scope('embeddings'):
-                self.embeddings = tf.Variable(tf.random_uniform([self.vocabulary_size, self.embedding_size], -1.0, 1.0), name='word')
-                self.weights = tf.Variable(tf.truncated_normal([self.label_size, self.embedding_size], stddev=1.0 / np.sqrt(self.embedding_size)))
+            with tf.name_scope('embedding'):
+                self.embeddings_weights = tf.Variable(tf.random_uniform([self.vocabulary_size, self.param_layer[0]], 
+                                                                        -1.0, 1.0), name='word')
+                self.embeddings_bias = tf.Variable(tf.zeros([self.param_layer[0]]))
+                self.weights = tf.Variable(tf.truncated_normal([self.label_size, self.param_layer[-1]],
+                                                               stddev=1.0 / np.sqrt(self.param_layer[-1])))
                 self.biases = tf.Variable(tf.zeros([self.label_size]))
+                                                                
+            # Prepare intermediate layers
+            with tf.name_scope('inter'):
+                x = tf.nn.embedding_lookup_sparse(self.embeddings_weights, self.x, None, combiner='sum') \
+                    + self.embeddings_bias
+                x = tf.nn.relu(x)
+                for n_feature in self.param_layer[1:]:
+                    x = tf.layers.dense(x, n_feature, activation=tf.nn.relu)
             
             # Create embedded vector
-            self.embed = tf.nn.embedding_lookup_sparse(self.embeddings, self.x, None, combiner='sum')
-            # self.embed = tf.matmul(self.x, self.embed_matrix_x)
+            self.embed = x
             
             # Create logit
             self.logit = tf.matmul(self.embed, tf.transpose(self.weights)) + self.biases
+            
+            # Saver
+            self.saver = tf.train.Saver(max_to_keep=10)
         
         
     def compile(self, num_sampled=5):
@@ -87,12 +98,10 @@ class WE_Label:
                                                           labels=self.y,
                                                           inputs=self.embed,
                                                           num_sampled=num_sampled,
-                                                          num_classes=self.label_size,
-                                                          num_true=self.num_true_class,
-                                                          remove_accidental_hits=True,))
+                                                          num_classes=self.label_size))
             # Construct Metric
             with tf.name_scope('metric'):
-                self.accuracy = tf.reduce_mean(sparse_categorical_accuracy(self.y[:, :1], self.logit))
+                self.accuracy = tf.reduce_mean(sparse_categorical_accuracy(self.y, self.logit))
             
             # Construct optimizer
             with tf.name_scope('optimizer'):
@@ -184,9 +193,9 @@ class WE_Label:
         else:
             flag_ckpt = False
         def check_point(step):
-            self.saver.save(self.sess, fn_ckpt, global_step=step)
+            self.save_model(fn_ckpt, epoch=step)
         def load_best():
-            self.saver.restore(self.sess, tf.train.latest_checkpoint(ckptdir))
+            self.load_model(tf.train.latest_checkpoint(ckptdir))
         #   History
         history = {'train': deque(maxlen=n_recent),
                    'val': deque(maxlen=n_recent)}
@@ -236,9 +245,9 @@ class WE_Label:
                 feed_dict = {self.x: batch_val_x, self.y: batch_val_y}                
                 loss_val, accuracy_val = self.sess.run([self.loss, self.accuracy],
                                                        feed_dict=feed_dict)
-                history['val'].append(loss_val)
+                history['val'].append(accuracy_val)
             else:
-                history['train'].append(loss)
+                history['train'].append(accuracy)
             
             if verbose and should(freq_prog):
                 progbar.update(step, [('loss', np.mean([loss])),
@@ -274,25 +283,24 @@ class WE_Label:
                 if self.sess.run(self.learning_rate) < min_lr:
                     print('\nLearning rate {0} reaches limit: < {1}.'.format(self.sess.run(self.learning_rate), min_lr))
                     break
-                    
+        
         # Make sure to load the best model
         load_best()
 
         # Get fit embedding
-        self.V, self.Uw, self.Ub = self.sess.run([self.embeddings, self.weights, self.biases], feed_dict={})
+        self.Uw, self.Ub = self.sess.run([self.weights, self.biases], feed_dict={})
         #   Combine weight and bias (intercept) for U (label embedding)
         self.U = np.concatenate((self.Uw, self.Ub[..., np.newaxis]), axis=1)
 
     
-    def predict(self, x, n_best=1):
+    def predict(self, x):
         # Pre-embed feature (x)
         batch_x = self._preprocess_batch(x)
         
         # Directly inference to get logit output
         logit_matrix = self.sess.run(self.logit, feed_dict={self.x: batch_x})
 
-        # y_idx = np.argmax(logit_matrix, axis=1)
-        y_idx = np.argsort(logit_matrix, axis=1)[:, -n_best:]
+        y_idx = np.argmax(logit_matrix, axis=1)
 
         # Recover target (y) from embed idx
         y = utils.asarray_of_list([ [ self.map_i2v_y[i] for i in arr ] for arr in y_idx ])
@@ -300,14 +308,19 @@ class WE_Label:
         return y
 
     
-    def save_model(self, filename):
-        with open(filename, 'wb') as file:
-            pickle.dump((self.U, self.V), file)
+    def save_model(self, filename, epoch=None):
+        if not epoch is None:
+            self.saver.save(self.sess, filename, global_step=epoch)
+        else:
+            self.saver.save(self.sess, filename, write_state=False)
+    
         
-        
-    def load_model(self, filename):
-        with open(filename, 'rb') as file:
-            self.U, self.V = pickle.load(file)
+    def load_model(self, filename, sess=None):
+        sess = sess or self.sess
+        try:
+            self.saver.restore(sess, filename)
+        except:
+            self.saver.restore(sess)
         
     
     def _preprocess_batch(self, x, y=None):
@@ -322,16 +335,9 @@ class WE_Label:
                                                                      #   tf.nn.embedding_lookup_sparse
 
         # Pre-embed target (y)
-        #   Adjust width of y first
+        #   Just return the mapped index of y instead of embedded matrix
         if not y is None:
-            def repeat(arr, n):
-                n_repeat = (n//len(arr) + 1)
-                return (arr*n_repeat)[:n]
-            y = [ repeat(arr, self.num_true_class) for arr in y ]
-            #   Just return the mapped index of y instead of embedded matrix
-            # y_prep = np.asarray([ self.map_v2i_y[v] for v in y ]).reshape(batch_size, 1)
-            y_prep = np.asarray([ [ self.map_v2i_y[v] for v in arr ] for arr in y ])
-
+            y_prep = np.asarray([ self.map_v2i_y[v] for v in y ]).reshape(batch_size, 1)
             return x_prep, y_prep
         else:
             return x_prep
